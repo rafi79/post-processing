@@ -30,7 +30,7 @@ st.set_page_config(
 )
 
 # Constants
-HF_TOKEN = "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"  # Using the token from your code
+HF_TOKEN = "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"  # Using the token from your code
 DEVICE = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
 # Sidebar
