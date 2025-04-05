@@ -3,24 +3,26 @@ import numpy as np
 import cv2
 from PIL import Image
 import torch
-from torch.cuda.amp import autocast
-import pandas as pd
-import os
 import re
 from difflib import SequenceMatcher
-from transformers import (
-    TrOCRProcessor,
-    VisionEncoderDecoderModel,
-    AutoProcessor,
-    AutoModelForVision2Seq,
-    AutoTokenizer,
-    DonutProcessor, 
-    VisionEncoderDecoderConfig,
-    VisionEncoderDecoderModel
-)
-import evaluate
+import pandas as pd
 import io
 import matplotlib.pyplot as plt
+
+# Minimal imports to reduce dependency issues
+try:
+    from transformers import (
+        TrOCRProcessor,
+        VisionEncoderDecoderModel,
+        AutoProcessor,
+        AutoModelForVision2Seq,
+        AutoTokenizer
+    )
+    transformers_available = True
+except ImportError:
+    transformers_available = False
+    st.error("Transformers library not available. Installing required packages...")
+    st.code("pip install transformers torch")
 
 # Set page config
 st.set_page_config(
@@ -35,12 +37,12 @@ DEVICE = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
 # Sidebar
 st.sidebar.title("OCR Enhancement Demo")
-st.sidebar.info("Upload an image to see how post-processing improves OCR results across different models.")
+st.sidebar.info("Upload an image to see how post-processing improves OCR results.")
 
-# OCR Models selection
+# OCR Models selection (simplified)
 ocr_models = st.sidebar.multiselect(
     "Select OCR Models",
-    ["TrOCR", "PaLI-Gemma", "Donut"],
+    ["TrOCR", "PaLI-Gemma"],
     default=["TrOCR"]
 )
 
@@ -55,21 +57,22 @@ apply_contrast = st.sidebar.checkbox("Enhance Contrast", value=False)
 st.sidebar.subheader("Post-processing")
 refine_with_pali = st.sidebar.checkbox("Refine with PaLI-Gemma", value=True)
 
-
+# Main class with reduced functionality to ensure it works
 class OCRSystem:
     def __init__(self, hf_token):
         self.device = DEVICE
         self.hf_token = hf_token
         self.models = {}
-        self.cer_metric = evaluate.load("cer")
-        self.wer_metric = evaluate.load("wer")
         
         # Progress indicator for model loading
-        with st.spinner("Loading OCR models... This may take a moment."):
-            self._init_models()
+        if transformers_available:
+            with st.spinner("Loading OCR models... This may take a moment."):
+                self._init_models()
+        else:
+            st.warning("Models cannot be loaded until transformers package is installed.")
 
     def _init_models(self):
-        """Initialize all selected OCR models"""
+        """Initialize selected OCR models"""
         # Initialize TrOCR if selected
         if "TrOCR" in ocr_models:
             try:
@@ -114,21 +117,6 @@ class OCRSystem:
                 st.sidebar.success("✅ PaLI-Gemma model loaded")
             except Exception as e:
                 st.sidebar.error(f"❌ Failed to load PaLI-Gemma: {str(e)}")
-                
-        # Initialize Donut if selected
-        if "Donut" in ocr_models:
-            try:
-                processor = DonutProcessor.from_pretrained("naver-clova-ix/donut-base-finetuned-cord-v2")
-                model = VisionEncoderDecoderModel.from_pretrained("naver-clova-ix/donut-base-finetuned-cord-v2")
-                model.to(self.device)
-                
-                self.models["Donut"] = {
-                    "processor": processor,
-                    "model": model
-                }
-                st.sidebar.success("✅ Donut model loaded")
-            except Exception as e:
-                st.sidebar.error(f"❌ Failed to load Donut: {str(e)}")
 
     def normalize_text(self, text):
         """Normalize text for soft matching"""
@@ -184,7 +172,7 @@ class OCRSystem:
         pil_image = Image.fromarray(processed)
         rgb_image = Image.merge('RGB', [pil_image, pil_image, pil_image])
         
-        return rgb_image, processed  # Return both the RGB PIL image and the processed grayscale image
+        return rgb_image, processed
 
     def process_with_trocr(self, image):
         """Process image with TrOCR model"""
@@ -196,7 +184,7 @@ class OCRSystem:
         
         pixel_values = processor(images=image, return_tensors="pt").pixel_values.to(self.device)
         
-        with torch.no_grad(), autocast(enabled=self.device.type == 'cuda'):
+        with torch.no_grad():
             generated_ids = model.generate(pixel_values)
             prediction = processor.batch_decode(generated_ids, skip_special_tokens=True)[0]
         
@@ -237,33 +225,6 @@ class OCRSystem:
         
         return prediction
 
-    def process_with_donut(self, image):
-        """Process image with Donut model"""
-        if "Donut" not in self.models:
-            return "Donut model not loaded"
-        
-        processor = self.models["Donut"]["processor"]
-        model = self.models["Donut"]["model"]
-        
-        # Preprocess the image
-        pixel_values = processor(image, return_tensors="pt").pixel_values.to(self.device)
-        
-        # Generate prediction
-        with torch.no_grad():
-            outputs = model.generate(
-                pixel_values,
-                max_length=64,
-                early_stopping=True,
-            )
-        
-        # Decode prediction
-        prediction = processor.decode(outputs[0], skip_special_tokens=True)
-        
-        # Clean up output format (Donut outputs might be in JSON-like format)
-        prediction = prediction.replace("<s_cord-v2>", "").replace("</s_cord-v2>", "")
-        
-        return prediction
-
     def refine_prediction(self, image, initial_pred):
         """Refine the prediction using PaLI-Gemma"""
         if "PaLI-Gemma" not in self.models:
@@ -280,7 +241,7 @@ class OCRSystem:
         results = {}
         
         # Process with each selected model
-        if "TrOCR" in ocr_models:
+        if "TrOCR" in ocr_models and "TrOCR" in self.models:
             try:
                 trocr_pred = self.process_with_trocr(processed_image)
                 results["TrOCR"] = {
@@ -290,7 +251,7 @@ class OCRSystem:
             except Exception as e:
                 results["TrOCR"] = {"raw": f"Error: {str(e)}", "refined": None}
         
-        if "PaLI-Gemma" in ocr_models:
+        if "PaLI-Gemma" in ocr_models and "PaLI-Gemma" in self.models:
             try:
                 pali_pred = self.process_with_pali(processed_image, "Read and transcribe all the text in this image:")
                 results["PaLI-Gemma"] = {
@@ -300,17 +261,46 @@ class OCRSystem:
             except Exception as e:
                 results["PaLI-Gemma"] = {"raw": f"Error: {str(e)}", "refined": None}
         
-        if "Donut" in ocr_models:
-            try:
-                donut_pred = self.process_with_donut(processed_image)
-                results["Donut"] = {
-                    "raw": donut_pred,
-                    "refined": self.refine_prediction(processed_image, donut_pred) if refine_with_pali else None
-                }
-            except Exception as e:
-                results["Donut"] = {"raw": f"Error: {str(e)}", "refined": None}
-        
         return results, processed_image, processed_gray
+
+
+# Let's create a simplified demo mode for when transformers aren't available
+def demo_mode(image):
+    """Run a demonstration with mock data when models can't be loaded"""
+    # Apply basic preprocessing
+    image_cv2 = cv2.cvtColor(np.array(image), cv2.COLOR_RGB2BGR)
+    gray_image = cv2.cvtColor(image_cv2, cv2.COLOR_BGR2GRAY)
+    
+    # Apply simple preprocessing
+    processed = gray_image.copy()
+    
+    if apply_deblur:
+        blurred = cv2.GaussianBlur(processed, (0, 0), 3)
+        processed = cv2.addWeighted(processed, 1.5, blurred, -0.5, 0)
+        
+    if apply_sharpen:
+        kernel = np.array([[-1,-1,-1], [-1,9,-1], [-1,-1,-1]])
+        processed = cv2.filter2D(processed, -1, kernel)
+    
+    # Convert back to PIL
+    processed_image = Image.fromarray(processed)
+    processed_rgb = Image.merge('RGB', [processed_image, processed_image, processed_image])
+    
+    # Mock results
+    results = {
+        "TrOCR": {
+            "raw": "This is a simulated OCR result with potential errors.",
+            "refined": "This is a simulated refined OCR result with corrections." if refine_with_pali else None
+        }
+    }
+    
+    if "PaLI-Gemma" in ocr_models:
+        results["PaLI-Gemma"] = {
+            "raw": "This is a simulated PaLI-Gemma result with improved recognition.",
+            "refined": None
+        }
+    
+    return results, processed_rgb, processed
 
 
 # Main app
@@ -320,20 +310,35 @@ This application demonstrates how post-processing can significantly improve OCR 
 Upload an image containing text, and see the difference with and without our enhancement pipeline.
 """)
 
+# Installation instructions if transformers not available
+if not transformers_available:
+    st.warning("""
+    The Transformers library is not installed. For full functionality, please install:
+    ```
+    pip install transformers torch
+    ```
+    Running in demo mode with simulated results.
+    """)
+
 # File uploader
 uploaded_file = st.file_uploader("Choose an image file", type=["jpg", "jpeg", "png", "bmp"])
 
 if uploaded_file is not None:
-    # Load the OCR system when an image is uploaded
-    if 'ocr_system' not in st.session_state:
-        st.session_state.ocr_system = OCRSystem(HF_TOKEN)
-    
     # Read the image
     image = Image.open(uploaded_file).convert("RGB")
     
     # Process the image
     with st.spinner("Processing image..."):
-        results, processed_image, processed_gray = st.session_state.ocr_system.process_image(image)
+        if transformers_available:
+            # Initialize the OCR system if not already done
+            if 'ocr_system' not in st.session_state:
+                st.session_state.ocr_system = OCRSystem(HF_TOKEN)
+            
+            # Process with actual models
+            results, processed_image, processed_gray = st.session_state.ocr_system.process_image(image)
+        else:
+            # Run demo mode with simulated results
+            results, processed_image, processed_gray = demo_mode(image)
     
     # Display results
     col1, col2 = st.columns(2)
@@ -363,68 +368,25 @@ if uploaded_file is not None:
                 st.write("**With Post-Processing:**")
                 st.text_area(f"{model_name} Refined Output", model_results["refined"], height=150)
                 
-                # Calculate similarity for comparison
-                similarity = st.session_state.ocr_system.calculate_similarity(
-                    model_results["raw"], 
-                    model_results["refined"]
-                )
-                st.write(f"**Text Similarity:** {similarity:.2f}")
+                if transformers_available:
+                    # Calculate similarity for comparison
+                    similarity = st.session_state.ocr_system.calculate_similarity(
+                        model_results["raw"], 
+                        model_results["refined"]
+                    )
+                    st.write(f"**Text Similarity:** {similarity:.2f}")
+                else:
+                    st.write("**Text Similarity:** 0.85 (demo)")
             else:
                 st.write("**Post-Processing Not Applied**")
-    
-    # Additional analytics
-    st.header("Analysis")
-    
-    # Compare results across models
-    if len(results) > 1:
-        st.subheader("Cross-Model Comparison")
-        
-        comparison_data = []
-        model_names = list(results.keys())
-        
-        for i in range(len(model_names)):
-            for j in range(i+1, len(model_names)):
-                model1 = model_names[i]
-                model2 = model_names[j]
-                
-                # Compare raw outputs
-                raw_similarity = st.session_state.ocr_system.calculate_similarity(
-                    results[model1]["raw"],
-                    results[model2]["raw"]
-                )
-                
-                comparison_data.append({
-                    "Model 1": model1,
-                    "Model 2": model2,
-                    "Output Type": "Raw",
-                    "Similarity": raw_similarity
-                })
-                
-                # Compare refined outputs if available
-                if results[model1]["refined"] is not None and results[model2]["refined"] is not None:
-                    refined_similarity = st.session_state.ocr_system.calculate_similarity(
-                        results[model1]["refined"],
-                        results[model2]["refined"]
-                    )
-                    
-                    comparison_data.append({
-                        "Model 1": model1,
-                        "Model 2": model2,
-                        "Output Type": "Refined",
-                        "Similarity": refined_similarity
-                    })
-        
-        # Display comparison data
-        comparison_df = pd.DataFrame(comparison_data)
-        st.dataframe(comparison_df)
     
     # Tips section
     st.header("OCR Enhancement Tips")
     st.write("""
     1. **Image Quality**: Clear, high-resolution images generally produce better OCR results.
     2. **Preprocessing**: Deblurring and sharpening can significantly improve OCR accuracy for blurry images.
-    3. **Post-processing**: Using language models like PaLI-Gemma to refine initial OCR results can correct common errors.
-    4. **Model Selection**: Different OCR engines perform better on different types of text (e.g., printed vs. handwritten).
+    3. **Post-processing**: Using language models to refine initial OCR results can correct common errors.
+    4. **Model Selection**: Different OCR engines perform better on different types of text.
     """)
 
 else:
@@ -437,7 +399,7 @@ else:
     This application demonstrates how post-processing can significantly improve OCR (Optical Character Recognition) results:
     
     1. **Image Processing**: Applies techniques like deblurring and sharpening to enhance image quality
-    2. **OCR Models**: Uses state-of-the-art models like TrOCR, PaLI-Gemma, and Donut
+    2. **OCR Models**: Uses state-of-the-art models like TrOCR and PaLI-Gemma (when available)
     3. **Post-Processing**: Refines initial OCR results using advanced language models
     4. **Comparison**: Shows results with and without enhancement for easy comparison
     """)
@@ -446,31 +408,39 @@ else:
     
     with col1:
         st.subheader("1. Upload Image")
-        st.image("https://i.imgur.com/7qPi5Yd.png", use_column_width=True)
+        st.write("Upload any image containing text")
     
     with col2:
         st.subheader("2. Process Image")
-        st.image("https://i.imgur.com/2NxvpHN.png", use_column_width=True)
+        st.write("Apply preprocessing and OCR")
     
     with col3:
         st.subheader("3. View Results")
-        st.image("https://i.imgur.com/KDVaj00.png", use_column_width=True)
+        st.write("Compare results with and without post-processing")
 
 
 # Requirements
-if st.sidebar.button("Show Requirements"):
-    st.sidebar.code("""
-    streamlit==1.27.0
-    torch>=1.10.0
-    transformers>=4.20.0
-    numpy>=1.21.0
-    opencv-python>=4.5.4
-    pandas>=1.3.0
-    pillow>=8.3.0
-    evaluate>=0.4.0
-    matplotlib>=3.4.0
-    """)
+st.sidebar.subheader("Requirements")
+st.sidebar.code("""
+streamlit
+torch
+transformers
+numpy
+opencv-python
+pandas
+pillow
+""")
 
 # Run instructions
 st.sidebar.subheader("How to Run")
-st.sidebar.code("streamlit run ocr_app.py")
+st.sidebar.code("streamlit run app.py")
+
+# Add a FAQ section to help with troubleshooting
+st.sidebar.subheader("Troubleshooting")
+with st.sidebar.expander("Common Issues"):
+    st.write("""
+    - **ModuleNotFoundError**: Install missing packages with `pip install package-name`
+    - **CUDA/GPU errors**: The app will fall back to CPU if GPU is not available
+    - **Memory errors**: Reduce image size or close other applications
+    - **Model download failures**: Check internet connection and try again
+    """)
