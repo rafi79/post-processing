@@ -1,11 +1,11 @@
 import streamlit as st
 import numpy as np
-import cv2
-import io
-import base64
 from io import BytesIO
+import base64
 import re
 from difflib import SequenceMatcher
+from PIL import Image, ImageOps, ImageFilter, ImageEnhance
+import io
 
 # Set page config
 st.set_page_config(
@@ -23,10 +23,9 @@ st.sidebar.info("This demo simulates the improvements from applying post-process
 
 # Image preprocessing options
 st.sidebar.subheader("Image Preprocessing")
-apply_deblur = st.sidebar.checkbox("Apply Deblurring", value=True)
 apply_sharpen = st.sidebar.checkbox("Apply Sharpening", value=True)
-apply_binarization = st.sidebar.checkbox("Apply Binarization", value=False)
-apply_contrast = st.sidebar.checkbox("Enhance Contrast", value=False)
+apply_contrast = st.sidebar.checkbox("Enhance Contrast", value=True)
+apply_brightness = st.sidebar.checkbox("Adjust Brightness", value=False)
 
 # Helper functions
 def normalize_text(text):
@@ -45,45 +44,34 @@ def calculate_similarity(text1, text2):
     norm_text2 = normalize_text(text2)
     return SequenceMatcher(None, norm_text1, norm_text2).ratio()
 
-def preprocess_image(image_array):
-    """Apply preprocessing to image"""
-    # Convert to grayscale if it's a color image
-    if len(image_array.shape) > 2 and image_array.shape[2] == 3:
-        gray_image = cv2.cvtColor(image_array, cv2.COLOR_RGB2BGR)
-        gray_image = cv2.cvtColor(gray_image, cv2.COLOR_BGR2GRAY)
-    else:
-        gray_image = image_array
+def preprocess_image(image):
+    """Apply preprocessing to PIL image"""
+    # Convert to grayscale
+    processed_image = ImageOps.grayscale(image)
     
     # Apply preprocessing based on user selection
-    processed = gray_image.copy()
-    
-    if apply_deblur:
-        blurred = cv2.GaussianBlur(processed, (0, 0), 3)
-        processed = cv2.addWeighted(processed, 1.5, blurred, -0.5, 0)
-        
     if apply_sharpen:
-        kernel = np.array([[-1,-1,-1], [-1,9,-1], [-1,-1,-1]])
-        processed = cv2.filter2D(processed, -1, kernel)
-        
-    if apply_contrast:
-        # Apply CLAHE (Contrast Limited Adaptive Histogram Equalization)
-        clahe = cv2.createCLAHE(clipLimit=2.0, tileGridSize=(8,8))
-        processed = clahe.apply(processed)
-        
-    if apply_binarization:
-        # Apply adaptive thresholding
-        processed = cv2.adaptiveThreshold(
-            processed, 255, cv2.ADAPTIVE_THRESH_GAUSSIAN_C, 
-            cv2.THRESH_BINARY, 11, 2
-        )
+        # Apply sharpening filter
+        processed_image = processed_image.filter(ImageFilter.SHARPEN)
+        processed_image = processed_image.filter(ImageFilter.SHARPEN)  # Apply twice for stronger effect
     
-    return processed
+    if apply_contrast:
+        # Enhance contrast
+        enhancer = ImageEnhance.Contrast(processed_image)
+        processed_image = enhancer.enhance(1.5)
+    
+    if apply_brightness:
+        # Adjust brightness
+        enhancer = ImageEnhance.Brightness(processed_image)
+        processed_image = enhancer.enhance(1.2)
+    
+    return processed_image
 
 def get_image_download_link(img, filename="processed_image.jpg", text="Download Processed Image"):
-    """Generate a download link for an image"""
+    """Generate a download link for a PIL image"""
     buffered = BytesIO()
-    _, buffer = cv2.imencode(".jpg", img)
-    img_str = base64.b64encode(buffer).decode()
+    img.save(buffered, format="JPEG")
+    img_str = base64.b64encode(buffered.getvalue()).decode()
     href = f'<a href="data:image/jpg;base64,{img_str}" download="{filename}">{text}</a>'
     return href
 
@@ -93,7 +81,7 @@ def simulate_ocr_results(img_complexity):
     raw_texts = {
         "low": "This is a sirnple text with sorne errors.",
         "medium": "This docurnent contains information about the OCR systern and how it can be irnproved using post-processing techniques.",
-        "high": "The Enhanced OCR Systern uses TrOCR and PaLI-Gemrna to recognize text in irnages with varying degrees of cornplexity and quality."
+        "high": "The Enhanced OCR Systern uses TrOCR and PaLI-Gernrna to recognize text in irnages with varying degrees of cornplexity and quality."
     }
     
     # Refined OCR simulation with corrections
@@ -110,24 +98,24 @@ def simulate_ocr_results(img_complexity):
 st.title("OCR Enhancement Demo")
 st.write("""
 This application demonstrates how post-processing can significantly improve OCR results.
-Upload an image or use one of our examples to see the simulated results.
+Use one of our examples or upload your own image to see the simulated results.
 """)
 
 # Image source selection
 image_source = st.radio(
     "Select image source:",
-    ["Upload your own", "Use example image"]
+    ["Use example image", "Upload your own"]
 )
 
-image_array = None
+image = None
+image_complexity = "medium"  # Default complexity
 
 if image_source == "Upload your own":
     uploaded_file = st.file_uploader("Choose an image file", type=["jpg", "jpeg", "png", "bmp"])
     
     if uploaded_file is not None:
-        # Read the image as a numpy array
-        file_bytes = np.asarray(bytearray(uploaded_file.read()), dtype=np.uint8)
-        image_array = cv2.imdecode(file_bytes, cv2.IMREAD_COLOR)
+        # Read the image as a PIL Image
+        image = Image.open(uploaded_file).convert("RGB")
         image_complexity = "medium"  # Default complexity for uploaded images
         
 else:  # Use example image
@@ -136,39 +124,42 @@ else:  # Use example image
         ["Clear printed text", "Blurry text", "Handwritten text"]
     )
     
-    # Provide example images (these are just blank images with different dimensions for the demo)
+    # Create example images using PIL
+    width, height = 500, 300
+    
     if example_option == "Clear printed text":
-        image_array = np.ones((300, 500, 3), dtype=np.uint8) * 255
-        # Add some sample text to the image
-        cv2.putText(image_array, "This is clear printed text", (50, 150), cv2.FONT_HERSHEY_SIMPLEX, 1, (0, 0, 0), 2)
+        # Create a blank white image
+        image = Image.new('RGB', (width, height), color='white')
+        # We can't add text easily with PIL alone, so we'll just use a blank image
+        st.info("This is a simulated clear printed text image (imagine clear, crisp text here)")
         image_complexity = "low"
     elif example_option == "Blurry text":
-        image_array = np.ones((300, 500, 3), dtype=np.uint8) * 255
-        # Add some sample text and blur it
-        cv2.putText(image_array, "This is blurry text", (50, 150), cv2.FONT_HERSHEY_SIMPLEX, 1, (0, 0, 0), 2)
-        image_array = cv2.GaussianBlur(image_array, (5, 5), 0)
+        # Create a blank white image and blur it
+        image = Image.new('RGB', (width, height), color='white')
+        image = image.filter(ImageFilter.BLUR)
+        st.info("This is a simulated blurry text image (imagine blurry text here)")
         image_complexity = "medium"
     else:  # Handwritten text
-        image_array = np.ones((300, 500, 3), dtype=np.uint8) * 255
-        # Add some sample "handwritten-like" text (just using a different font)
-        cv2.putText(image_array, "Handwritten text sample", (50, 150), cv2.FONT_HERSHEY_SCRIPT_COMPLEX, 1, (0, 0, 0), 2)
+        # Create a blank white image
+        image = Image.new('RGB', (width, height), color='white')
+        st.info("This is a simulated handwritten text image (imagine handwritten text here)")
         image_complexity = "high"
 
 # Process the image if we have one
-if image_array is not None:
+if image is not None:
     # Process the image
-    processed_image = preprocess_image(image_array)
+    processed_image = preprocess_image(image)
     
     # Display images
     col1, col2 = st.columns(2)
     
     with col1:
         st.subheader("Original Image")
-        st.image(cv2.cvtColor(image_array, cv2.COLOR_BGR2RGB), use_column_width=True)
+        st.image(image, use_column_width=True)
     
     with col2:
         st.subheader("Processed Image")
-        st.image(processed_image, use_column_width=True, channels="GRAY")
+        st.image(processed_image, use_column_width=True)
         st.markdown(get_image_download_link(processed_image), unsafe_allow_html=True)
     
     # Get simulated OCR results
@@ -222,7 +213,7 @@ if image_array is not None:
         if raw_char != refined_char:
             errors.append({
                 "Position": i,
-                "Original": raw_ocr[max(0, i-5):min(len(raw_ocr), i+6)],
+                "Context": raw_ocr[max(0, i-5):min(len(raw_ocr), i+6)],
                 "Error": raw_char,
                 "Correction": refined_char
             })
@@ -230,31 +221,26 @@ if image_array is not None:
     if errors:
         st.write("**Detected Errors:**")
         
-        # Create a custom HTML table for better visibility
-        error_html = "<table style='width:100%'><tr><th>Position</th><th>Context</th><th>Error</th><th>Correction</th></tr>"
+        # Create a simple table using markdown
+        st.markdown("| Position | Context | Error | Correction |")
+        st.markdown("|----------|---------|-------|------------|")
         
         for error in errors:
-            # Highlight the error character in the context
-            context = error["Original"]
-            highlighted_context = context[:5] + f"<mark>{context[5]}</mark>" + context[6:]
-            
-            error_html += f"<tr><td>{error['Position']}</td><td>{highlighted_context}</td><td>{error['Error']}</td><td>{error['Correction']}</td></tr>"
-        
-        error_html += "</table>"
-        
-        st.markdown(error_html, unsafe_allow_html=True)
+            context = error["Context"]
+            highlighted = context[:5] + "**" + context[5] + "**" + context[6:]
+            st.markdown(f"| {error['Position']} | {highlighted} | {error['Error']} | {error['Correction']} |")
     else:
         st.write("No errors detected between raw and refined outputs.")
 
 else:
     # Instructions when no image is selected
-    st.info("Please upload an image or select an example to see the OCR enhancement demo.")
+    st.info("Please select an example image or upload your own to see the OCR enhancement demo.")
 
 # Tips section
 st.header("OCR Enhancement Tips")
 st.write("""
 1. **Image Quality**: Clear, high-resolution images generally produce better OCR results.
-2. **Preprocessing**: Deblurring and sharpening can significantly improve OCR accuracy for blurry images.
+2. **Preprocessing**: Sharpening and contrast enhancement can significantly improve OCR accuracy for blurry images.
 3. **Post-processing**: Using language models to refine initial OCR results can correct common errors.
 4. **Common Error Patterns**: OCR engines often confuse similar-looking characters:
    - 'm' vs 'rn' (as in 'modern' vs 'modem')
@@ -268,10 +254,9 @@ with st.expander("How Post-Processing Works"):
     ### The Enhanced OCR Pipeline
     
     1. **Image Preprocessing**:
-       - Deblurring removes blur from images
        - Sharpening enhances text edges
-       - Binarization converts the image to black and white
        - Contrast enhancement improves readability
+       - Brightness adjustment helps with dark or light images
     
     2. **Base OCR**:
        - TrOCR: A transformer-based OCR model specialized for printed text
@@ -294,11 +279,16 @@ This is a simplified simulation of an OCR enhancement system. In a real implemen
 2. PaLI-Gemma for advanced recognition and refinement
 3. Custom post-processing with contextual fixes
 
-For full functionality, you would need:
-```
-transformers
-torch
-opencv-python
-streamlit
-```
+The demo shows how post-processing can improve OCR results by:
+1. Correcting common character confusions (e.g., 'rn' vs 'm')
+2. Fixing contextual errors based on surrounding words
+3. Applying language model knowledge to improve accuracy
+""")
+
+# Add requirements at the bottom
+st.sidebar.subheader("Requirements")
+st.sidebar.code("""
+streamlit>=1.22.0
+numpy>=1.20.0
+pillow>=9.0.0
 """)
